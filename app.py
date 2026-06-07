@@ -17,15 +17,14 @@ def init_db():
             icon_bytes BLOB
         )
     """)
-    # 2. 投稿テーブル（画像データ、いいね数を追加）
+    # 2. 投稿テーブル
     c.execute("""
         CREATE TABLE IF NOT EXISTS posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT,
             text TEXT,
             image_bytes BLOB,
-            time TEXT,
-            likes INTEGER DEFAULT 0
+            time TEXT
         )
     """)
     # 3. いいね追跡テーブル
@@ -34,6 +33,16 @@ def init_db():
             post_id INTEGER,
             username TEXT,
             PRIMARY KEY (post_id, username)
+        )
+    """)
+    # 4. DMテーブル
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS dms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender TEXT,
+            receiver TEXT,
+            text TEXT,
+            time TEXT
         )
     """)
     conn.commit()
@@ -51,44 +60,28 @@ init_db()
 # --- アプリの設定 ---
 st.set_page_config(page_title="MiniShare X", page_icon="🕊️", layout="centered")
 
-# CSSの定義（ダークモードと投稿カードのデザイン）
+# CSSの定義（ダークモード風の投稿カードデザイン）
 st.markdown("""
     <style>
         .post-card {
-            background-color: #1a1a1a;
-            padding: 20px;
-            border-radius: 15px;
-            margin-bottom: 20px;
-            border: 1px solid #333;
-        }
-        .post-header {
-            display: flex;
-            align-items: center;
+            background-color: #1e1e1e;
+            padding: 15px;
+            border-radius: 12px;
             margin-bottom: 10px;
+            border: 1px solid #333;
         }
         .user-name {
             font-weight: bold;
-            margin-left: 10px;
             color: #fff;
         }
         .post-time {
             color: #888;
             font-size: 0.8em;
-            margin-left: auto;
         }
         .post-text {
             color: #eee;
-            margin-bottom: 15px;
-        }
-        .post-image {
-            max-width: 100%;
-            border-radius: 10px;
-            margin-bottom: 15px;
-        }
-        .action-buttons {
-            display: flex;
-            gap: 15px;
-            color: #888;
+            margin-top: 5px;
+            white-space: pre-wrap;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -97,7 +90,7 @@ st.markdown("""
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# ログイン後のメイン画面
+# --- ログイン後のメイン画面 ---
 if st.session_state.user:
     # ユーザーのアイコンを取得する関数
     def get_user_icon(username):
@@ -147,7 +140,7 @@ if st.session_state.user:
         st.rerun()
 
     # タブの作成
-    tab1, tab2 = st.tabs(["🏠 ホーム", "💌 メッセージ"])
+    tab1, tab2, tab3 = st.tabs(["🏠 ホーム", "💌 DM", "⚙️ 設定"])
 
     # --- タブ1: ホーム（タイムライン） ---
     with tab1:
@@ -184,34 +177,126 @@ if st.session_state.user:
             likes_count = get_likes_count(post_id)
             user_liked = check_user_liked(post_id, st.session_state.user)
             
-            with st.container():
-                # HTMLとCSSを使って投稿カードを作成
-                st.markdown(f"""
-                    <div class="post-card">
-                        <div class="post-header">
-                            <img src="data:image/png;base64,{st.image(icon)._repr_png_()}" style="width:40px;height:40px;border-radius:50%;">
-                            <div class="user-name">{username}</div>
-                            <div class="post-time">{time}</div>
-                        </div>
-                        <div class="post-text">{text}</div>
-                    </div>
-                """, unsafe_allow_html=True)
+            # カスタムカードUIの表示
+            st.markdown(f"""
+                <div class="post-card">
+                    <span class="user-name">{username}</span> 
+                    <span class="post-time">· {time}</span>
+                    <div class="post-text">{text}</div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # 画像の表示
+            if image_bytes:
+                st.image(io.BytesIO(image_bytes), use_container_width=True)
                 
-                # 画像がある場合は表示
-                if image_bytes:
-                    st.image(io.BytesIO(image_bytes), use_column_width=True, caption="投稿画像")
-                
-                # いいねボタン（Streamlitのボタンを使って実装）
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    like_label = f"❤️ {likes_count}" if user_liked else f"🖤 {likes_count}"
-                    if st.button(like_label, key=f"like_{post_id}"):
-                        toggle_like(post_id, st.session_state.user)
-                        st.rerun()
-                with col2:
-                    if st.button("💬 コメント", key=f"comment_{post_id}"):
-                        st.write("コメント機能は未実装です")
+            # いいねボタン
+            like_label = f"❤️ {likes_count}" if user_liked else f"🖤 {likes_count}"
+            if st.button(like_label, key=f"like_{post_id}"):
+                toggle_like(post_id, st.session_state.user)
+                st.rerun()
+            st.markdown("---")
 
-# ログイン・サインアップ画面
+    # --- タブ2: DM (ダイレクトメッセージ) ---
+    with tab2:
+        st.subheader("💌 ダイレクトメッセージ")
+        conn = sqlite3.connect("minishare.db")
+        c = conn.cursor()
+        c.execute("SELECT username FROM users WHERE username != ?", (st.session_state.user,))
+        users = [row[0] for row in c.fetchall()]
+        conn.close()
+        
+        if not users:
+            st.info("まだ他のユーザーが登録されていません。")
+        else:
+            receiver = st.selectbox("話す相手を選ぶ", users)
+            dm_text = st.text_input(f"{receiver} へメッセージを送る")
+            if st.button("DMを送信"):
+                if dm_text.strip():
+                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    conn = sqlite3.connect("minishare.db")
+                    c = conn.cursor()
+                    c.execute("INSERT INTO dms (sender, receiver, text, time) VALUES (?,?,?,?)", (st.session_state.user, receiver, dm_text, now))
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
+            
+            st.markdown("### チャット履歴")
+            conn = sqlite3.connect("minishare.db")
+            c = conn.cursor()
+            c.execute("""
+                SELECT sender, text, time FROM dms 
+                WHERE (sender=? AND receiver=?) OR (sender=? AND receiver=?)
+                ORDER BY id DESC
+            """, (st.session_state.user, receiver, receiver, st.session_state.user))
+            dms = c.fetchall()
+            conn.close()
+            
+            for sender, text, time in dms:
+                icon = get_user_icon(sender)
+                is_me = " (あなた)" if sender == st.session_state.user else ""
+                with st.chat_message("user", avatar=icon):
+                    st.write(f"**{sender}{is_me}**  <small style='color:gray;'>{time}</small>", unsafe_allow_html=True)
+                    st.write(text)
+
+    # --- タブ3: 設定 ---
+    with tab3:
+        st.subheader("⚙️ プロフィール設定")
+        new_icon_file = st.file_uploader("新しいアイコン画像を選択", type=["png", "jpg", "jpeg"])
+        if st.button("アイコンを更新"):
+            if new_icon_file:
+                icon_data = new_icon_file.read()
+                conn = sqlite3.connect("minishare.db")
+                c = conn.cursor()
+                c.execute("UPDATE users SET icon_bytes=? WHERE username=?", (icon_data, st.session_state.user))
+                conn.commit()
+                conn.close()
+                st.success("アイコンを更新しました！")
+                st.rerun()
+
+# --- ログイン・サインアップ画面（未ログイン時） ---
 else:
-    # (省略：以前のアカウント作成、ログイン処理と同じ)
+    st.title("🕊️ MiniShare X")
+    menu = ["ログイン", "新アカウント作成"]
+    choice = st.sidebar.selectbox("メニュー", menu)
+
+    if choice == "新アカウント作成":
+        st.subheader("👤 新しいアカウントを作る")
+        new_user = st.text_input("ユーザー名（英語・数字推奨）", max_chars=15)
+        new_password = st.text_input("パスワード", type="password")
+        uploaded_file = st.file_uploader("アイコン画像を選択（任意）", type=["png", "jpg", "jpeg"])
+        
+        if st.button("登録する", type="primary"):
+            if not new_user or not new_password:
+                st.error("ユーザー名とパスワードを入力してください。")
+            else:
+                conn = sqlite3.connect("minishare.db")
+                c = conn.cursor()
+                c.execute("SELECT * FROM users WHERE username=?", (new_user,))
+                if c.fetchone():
+                    st.error("そのユーザー名はすでに使われています。")
+                else:
+                    icon_data = uploaded_file.read() if uploaded_file else None
+                    c.execute("INSERT INTO users VALUES (?,?,?)", (new_user, make_hash(new_password), icon_data))
+                    conn.commit()
+                    st.success("アカウントが作成されました！ログインしてください。")
+                conn.close()
+
+    elif choice == "ログイン":
+        st.subheader("🔒 ログイン")
+        username = st.text_input("ユーザー名")
+        password = st.text_input("パスワード", type="password")
+        
+        if st.button("ログイン", type="primary"):
+            conn = sqlite3.connect("minishare.db")
+            c = conn.cursor()
+            c.execute("SELECT password FROM users WHERE username=?", (username,))
+            result = c.fetchone()
+            conn.close()
+            
+            if result and check_hashes(password, result[0]):
+                st.session_state.user = username
+                st.success(f"{username} としてログインしました")
+                st.rerun()
+            else:
+                st.error("ユーザー名またはパスワードが違います。")
